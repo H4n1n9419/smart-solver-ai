@@ -1,7 +1,6 @@
-
 {
-  "name": "smart-solver-ai",
-  "version": "3.1.0",
+  "name": "smart-aira-ai",
+  "version": "3.2.0",
   "private": true,
   "type": "module",
   "dependencies": {
