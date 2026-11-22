@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101827"><title>SMART SOLVER AI</title>
+<style>
+:root{--bg:#0b1220;--panel:#151f30;--line:#29364b;--txt:#f4f7fb;--muted:#9eacc1;--green:#19a66a;--blue:#3978ef;--red:#d94d5c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:15px system-ui,Arial;padding-bottom:100px}
+header{padding:18px 16px;background:#101a2a;border-bottom:1px solid var(--line)}h1{font-size:21px;margin:0}header p{color:var(--muted);font-size:12px;margin:5px 0 0}
+main{max-width:760px;margin:auto;padding:14px}.tabs{display:flex;gap:8px;overflow:auto;margin-bottom:14px}.tab{border:1px solid var(--line);background:var(--panel);color:var(--txt);border-radius:12px;padding:10px 13px;white-space:nowrap}.tab.active{background:#214b3b;border-color:var(--green)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:13px}h2{font-size:16px;margin:0 0 12px}.muted{color:var(--muted);font-size:12px;line-height:1.5}
+button,.filelabel{border:0;border-radius:12px;padding:12px 14px;font-weight:650;color:white;background:var(--blue);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+button.secondary,.filelabel.secondary{background:#29364b}button.danger{background:#7e2935}button.green{background:var(--green)}
+.actions{display:flex;gap:8px;flex-wrap:wrap}.actions>*{flex:1}
+input,textarea{width:100%;background:#0d1727;border:1px solid var(--line);color:var(--txt);border-radius:11px;padding:12px;font:inherit;margin:5px 0 10px}textarea{min-height:95px;resize:vertical}label{font-size:13px;color:#cbd5e1}
+video{width:100%;max-height:45vh;background:#05080d;border-radius:12px;display:none}#preview{width:100%;max-height:230px;object-fit:contain;border-radius:10px;display:none;background:#05080d}
+#status{padding:10px;border-radius:10px;background:#0d1727;color:#b8c7da;font-size:13px;margin-top:10px;white-space:pre-wrap}
+.result,.item{border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:10px}.q{font-weight:700;margin-bottom:7px}.answer{color:#c7f4dc;white-space:pre-wrap}.count{color:#9fb0c7;font-size:12px}
+.bottom{position:fixed;z-index:10;bottom:0;left:0;right:0;padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:rgba(10,17,29,.97);border-top:1px solid var(--line);backdrop-filter:blur(10px)}.bottom button{width:100%;min-height:56px;background:var(--green);font-size:16px;border-radius:15px}
+.hidden{display:none!important}.item small{color:var(--muted)}
+</style></head><body>
+<header><h1>SMART SOLVER AI</h1><p>Baca soal • Cari bank soal online • Kelola jawaban</p></header>
+<main>
+<div class="tabs"><button class="tab active" data-tab="scan">Baca Soal</button><button class="tab" data-tab="bank">Bank Soal</button><button class="tab" data-tab="manage">Kelola Data</button></div>
+<section id="scan">
+<div class="panel"><h2>Baca soal</h2><p class="muted">Arahkan kamera HP ini ke layar HP lain. Mode langsung mencoba membaca teks secara berkala. Gunakan HTTPS dan izinkan akses kamera.</p>
+<div class="actions"><button id="startLive" class="green">▶ Mulai Baca Langsung</button><button id="stopLive" class="secondary">■ Berhenti</button></div>
+<video id="video" autoplay playsinline muted></video>
+<div class="actions" style="margin-top:9px"><button id="capture" class="secondary">Ambil Foto</button><label class="filelabel secondary">Upload Screenshot<input id="upload" type="file" accept="image/*" hidden></label></div>
+<img id="preview" alt="Pratinjau soal"><div id="status">Siap. Pilih Baca Langsung, Kamera, atau Upload Screenshot.</div></div>
+<div class="panel"><h2>Teks soal terbaca</h2><textarea id="recognized" placeholder="Teks hasil OCR muncul di sini. Periksa bila ada kesalahan..."></textarea><button id="match" class="green">Cari di Bank Soal Online</button><div id="matches"></div></div>
+</section>
+<section id="bank" class="hidden"><div class="panel"><h2>Bank Soal Online</h2><input id="searchBank" placeholder="Ketik kata dari soal..."><div id="bankCount" class="count"></div><div id="bankList"></div></div></section>
+<section id="manage" class="hidden">
+<div class="panel"><h2>Tambah soal dan jawaban</h2><label>Soal</label><textarea id="newQuestion" placeholder="Masukkan pertanyaan..."></textarea><label>Jawaban</label><textarea id="newAnswer" placeholder="Masukkan jawaban yang sudah diperiksa..."></textarea>
+<label>Kunci admin</label><input id="adminKey" type="password" autocomplete="off" placeholder="Masukkan KNOWLEDGE_ADMIN_KEY"><button id="save" class="green">Simpan ke Bank Online</button><div id="saveMsg" class="muted"></div></div>
+<div class="panel"><h2>Impor / ekspor</h2><p class="muted">Impor JSON untuk menambah banyak soal. Soal yang sama persis setelah normalisasi akan dilewati. Ekspor untuk cadangan.</p><div class="actions"><label class="filelabel secondary">Impor JSON<input id="importFile" type="file" accept=".json,application/json" hidden></label><button id="export" class="secondary">Ekspor JSON</button></div></div>
+<div class="panel"><h2>Perbaiki atau hapus data</h2><p class="muted">Edit atau hapus entri yang jawabannya keliru. Tindakan ini memerlukan kunci admin.</p><div id="manageList"></div></div>
+</section></main>
+<div class="bottom"><button id="bottomLive">◎ BACA LANGSUNG</button></div><canvas id="canvas" class="hidden"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);let stream=null,liveTimer=null,worker=null,cache=[];
+const norm=s=>(s||'').toLocaleLowerCase('id').normalize('NFKC').replace(/\s+/g,' ').trim();
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function status(s){$('status').textContent=s}
+async function api(payload,admin=false){const headers={'Content-Type':'application/json'};if(admin)headers['x-admin-key']=$('adminKey').value.trim();const r=await fetch('/.netlify/functions/knowledge',{method:'POST',headers,body:JSON.stringify(payload)});const j=await r.json();if(!r.ok)throw Error(j.error||'Permintaan gagal');return j}
+function switchTab(t){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));['scan','bank','manage'].forEach(x=>$(x).classList.toggle('hidden',x!==t));if(t!=='scan')stopCamera();if(t==='bank')loadBank();if(t==='manage')loadManage()}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
+async function getWorker(){if(!window.Tesseract)throw Error('Mesin OCR belum termuat. Periksa internet.');if(!worker)worker=await Tesseract.createWorker('ind+eng');return worker}
+async function findMatches(q){$('matches').innerHTML='<p class="muted">Mencari...</p>';try{const j=await api({action:'search',query:q});$('matches').innerHTML=j.results?.length?j.results.map(x=>`<div class="result"><div class="q">${esc(x.question)}</div><div class="answer">${esc(x.answer)}</div><small>Kecocokan: ${Math.round((x.score||0)*100)}%</small></div>`).join(''):'<div class="result">Belum ditemukan soal yang cukup mirip.</div>'}catch(e){$('matches').textContent='Pencarian gagal: '+e.message}}
+async function readImage(source){status('Membaca tulisan pada gambar...');try{const w=await getWorker(),r=await w.recognize(source),txt=r.data.text.trim();if(txt){$('recognized').value=txt;status('Selesai membaca. Mencari kecocokan di bank soal...');await findMatches(txt)}else status('Tulisan belum terbaca. Coba dekatkan kamera atau gunakan gambar lebih jelas.')}catch(e){status('OCR gagal: '+e.message)}}
+async function startCamera(){if(!navigator.mediaDevices?.getUserMedia){status('Kamera memerlukan HTTPS dan browser yang mendukung.');return false}try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});$('video').srcObject=stream;$('video').style.display='block';return true}catch(e){status('Kamera tidak bisa dibuka: '+e.message);return false}}
+function stopCamera(){if(liveTimer){clearInterval(liveTimer);liveTimer=null}if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}$('video').style.display='none'}
+async function live(){if(liveTimer)return;if(!stream&&!await startCamera())return;status('Baca langsung aktif. Kamera membaca berkala; tahan layar tetap stabil.');let busy=false;liveTimer=setInterval(async()=>{if(busy||!stream)return;const v=$('video');if(v.readyState<2)return;busy=true;const c=$('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);await readImage(c);busy=false},6000)}
+$('startLive').onclick=live;$('bottomLive').onclick=()=>{switchTab('scan');live()};$('stopLive').onclick=()=>{stopCamera();status('Baca langsung dihentikan.')};
+$('capture').onclick=async()=>{if(!stream&&!await startCamera())return;const v=$('video'),c=$('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);$('preview').src=c.toDataURL('image/jpeg',.9);$('preview').style.display='block';await readImage(c)};
+$('upload').onchange=e=>{const f=e.target.files[0];if(!f)return;$('preview').src=URL.createObjectURL(f);$('preview').style.display='block';readImage(f);e.target.value=''};
+$('match').onclick=()=>findMatches($('recognized').value);
+$('save').onclick=async()=>{const question=$('newQuestion').value.trim(),answer=$('newAnswer').value.trim();if(!question||!answer){$('saveMsg').textContent='Soal dan jawaban wajib diisi.';return}try{const j=await api({action:'add',question,answer},true);$('saveMsg').textContent=j.duplicate?'Soal yang sama sudah ada. Tidak dibuat duplikat.':'Soal berhasil ditambahkan.';$('newQuestion').value='';$('newAnswer').value='';loadManage()}catch(e){$('saveMsg').textContent='Gagal menyimpan: '+e.message}};
+async function loadBank(){try{const j=await api({action:'list',limit:100});cache=j.items||[];$('bankCount').textContent=`Menampilkan ${cache.length} soal terbaru. Total: ${j.total??'—'}`;renderBank(cache)}catch(e){$('bankCount').textContent='Gagal memuat bank: '+e.message}}
+function renderBank(rows){$('bankList').innerHTML=rows.map(x=>`<div class="item"><div class="q">${esc(x.question)}</div><div class="answer">${esc(x.answer)}</div></div>`).join('')||'<p class="muted">Belum ada data.</p>'}
+$('searchBank').oninput=async()=>{const q=$('searchBank').value.trim();if(!q){renderBank(cache);return}try{const j=await api({action:'search',query:q});renderBank(j.results||[])}catch(e){$('bankList').textContent=e.message}};
+async function loadManage(){try{const j=await api({action:'list',limit:100});const items=j.items||[];cache=items;$('manageList').innerHTML=items.map(x=>`<div class="item"><div class="q">${esc(x.question)}</div><div>${esc(x.answer)}</div><div class="actions" style="margin-top:8px"><button class="secondary" onclick="editItem('${x.id}')">Edit</button><button class="danger" onclick="deleteItem('${x.id}')">Hapus</button></div></div>`).join('')||'<p class="muted">Bank soal kosong.</p>'}catch(e){$('manageList').textContent='Gagal memuat: '+e.message}}
+window.editItem=async id=>{const old=cache.find(x=>x.id===id);if(!old){alert('Muat ulang daftar terlebih dahulu.');return}const question=prompt('Edit soal:',old.question);if(question===null)return;const answer=prompt('Edit jawaban:',old.answer);if(answer===null)return;try{await api({action:'update',id,question,answer},true);alert('Data diperbarui.');loadManage()}catch(e){alert('Gagal: '+e.message)}};
+window.deleteItem=async id=>{if(!confirm('Yakin menghapus soal dan jawaban ini?'))return;try{await api({action:'delete',id},true);alert('Data dihapus.');loadManage()}catch(e){alert('Gagal: '+e.message)}};
+$('export').onclick=async()=>{try{const j=await api({action:'export'});const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(j.items||[],null,2)],{type:'application/json'}));a.download='smart-solver-bank-soal.json';a.click()}catch(e){alert('Ekspor gagal: '+e.message)}};
+$('importFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const arr=JSON.parse(await f.text());if(!Array.isArray(arr))throw Error('Format harus array JSON');let added=0,duplicates=0;for(let i=0;i<arr.length;i+=1){const z=arr[i];const q=String(z.question||z.soal||'').trim(),a=String(z.answer||z.jawaban||'').trim();if(!q||!a)continue;const j=await api({action:'add',question:q,answer:a},true);if(j.duplicate)duplicates++;else added++}alert(`Impor selesai. Ditambahkan: ${added}. Duplikat dilewati: ${duplicates}.`);loadManage()}catch(err){alert('Impor gagal: '+err.message)}e.target.value=''};
+</script></body></html>
