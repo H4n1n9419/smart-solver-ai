@@ -19,44 +19,56 @@ export default async function handler(request){
   if(!(await verifyAdmin(store,key)))return reply({error:"Kunci admin tidak cocok"},401);
   const body=await request.json(),action=body.action;
   if(action==="start"){
-   const old=await store.get("repair-state",{type:"json"});
-   // Resume an unfinished run instead of rejecting it. This avoids a stuck
-   // state when the browser was closed or a previous request timed out.
-   if(old&&!old.done){
-    return reply({ok:true,done:false,resumed:true,processed:old.processed||0});
+   let state=await store.get("repair-state",{type:"json"});
+   if(!state||state.done){
+    const run=crypto.randomUUID();
+    state={run,cursor:null,page:0,processed:0,done:false,startedAt:new Date().toISOString()};
+    await store.setJSON("repair-state",state);
    }
-   await store.setJSON("repair-state",{cursor:null,processed:0,ids:[],done:false,startedAt:new Date().toISOString()});
-   return reply({ok:true,done:false,resumed:false,processed:0});
+   return reply({ok:true,done:state.done,resumed:true,processed:state.processed||0});
   }
   if(action==="step"){
    const state=await store.get("repair-state",{type:"json"});
-   if(!state)return reply({error:"Belum ada proses pemulihan. Tekan tombol sekali lagi."},400);
-   if(state.done)return reply({ok:true,done:true,total:state.ids.length,processed:state.processed});
+   if(!state)return reply({error:"Belum ada proses pemulihan. Tekan tombol Pulihkan Indeks."},400);
+   if(state.done)return reply({ok:true,done:true,total:state.total||0,processed:state.processed||0});
    const page=await store.list({prefix:"q:",...(state.cursor?{cursor:state.cursor}:{}),limit:100});
-   const ids=[...state.ids],tokenSets=new Map();
+   const ids=[],tokenAdds=new Map();
    for(const blob of (page.blobs||[])){
-    const id=blob.key.slice(2); if(!id)continue;
-    const record=await store.get(blob.key,{type:"json"}); if(!record||!record.question||!record.answer)continue;
+    if(!blob.key.startsWith("q:"))continue;
+    const id=blob.key.slice(2);if(!id)continue;
+    const record=await store.get(blob.key,{type:"json"});
+    if(!record||!record.question||!record.answer)continue;
     ids.push(id);
     for(const token of words(record.question)){
-     if(!tokenSets.has(token))tokenSets.set(token,new Set());
-     tokenSets.get(token).add(id);
+     if(!tokenAdds.has(token))tokenAdds.set(token,new Set());
+     tokenAdds.get(token).add(id);
     }
    }
-   for(const [token,newIds] of tokenSets){
+   // Merge token index entries idempotently. The cursor advances only after
+   // this page's records and page-ID shard have been persisted.
+   for(const [token,additions] of tokenAdds){
     const k=`tok:${sha(token)}`,existing=await store.get(k,{type:"json"})||[];
-    const merged=new Set([...existing,...newIds]);
+    const merged=new Set([...existing,...additions]);
     await store.setJSON(k,[...merged]);
    }
-   const processed=state.processed+(page.blobs||[]).length;
+   const pageKey=`repair-ids:${state.run}:${state.page}`;
+   await store.setJSON(pageKey,ids);
    const next=page.cursor||null,done=!next;
-   await store.setJSON("repair-state",{cursor:next,processed,ids,done,startedAt:state.startedAt});
+   const updated={...state,cursor:next,page:state.page+1,processed:state.processed+(page.blobs||[]).length,done};
+   await store.setJSON("repair-state",updated);
    if(done){
-    const unique=[...new Set(ids)];
+    const all=[];
+    for(let n=0;n<updated.page;n++){
+     const part=await store.get(`repair-ids:${state.run}:${n}`,{type:"json"})||[];
+     all.push(...part);
+    }
+    const unique=[...new Set(all)];
     await store.setJSON("index",{ids:unique,exact:{}});
-    return reply({ok:true,done:true,total:unique.length,processed});
+    updated.total=unique.length;
+    await store.setJSON("repair-state",updated);
+    return reply({ok:true,done:true,total:unique.length,processed:updated.processed});
    }
-   return reply({ok:true,done:false,processed,totalSoFar:ids.length});
+   return reply({ok:true,done:false,processed:updated.processed,totalSoFar:state.processed+ids.length});
   }
   if(action==="status"){
    const s=await store.get("repair-state",{type:"json"});
