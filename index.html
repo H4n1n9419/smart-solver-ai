@@ -42,7 +42,7 @@ video{width:100%;max-height:40vh;background:#05080d;border-radius:12px;display:n
 <div class="panel"><h2>Tambah soal dan jawaban</h2><label>Soal</label><textarea id="newQ" placeholder="Masukkan pertanyaan..."></textarea><label>Jawaban</label><textarea id="newA" placeholder="Masukkan jawaban yang sudah diperiksa..."></textarea><button class="green" id="save">Simpan ke Bank Online</button><p id="saveMsg" class="muted"></p></div>
 <div class="panel"><h2>AI cadangan</h2><p class="muted">Urutan otomatis: Gemini → Groq → Mistral → Cloudflare Workers AI → OpenRouter. API key diatur melalui Environment Variables Netlify: GEMINI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CF_ACCOUNT_ID, CF_API_TOKEN, OPENROUTER_API_KEY. Provider yang belum memiliki API key akan dilewati.</p></div>
 <div class="panel"><h2>Keamanan Admin</h2><p class="muted">Ganti kunci admin tanpa membuka pengaturan Netlify. Gunakan kunci baru minimal 12 karakter.</p><label>Kunci admin saat ini</label><input id="oldAdminKey" type="password" autocomplete="current-password" placeholder="Kunci saat ini"><label>Kunci admin baru</label><input id="newAdminKey" type="password" autocomplete="new-password" placeholder="Minimal 12 karakter"><label>Ulangi kunci admin baru</label><input id="confirmAdminKey" type="password" autocomplete="new-password" placeholder="Ulangi kunci baru"><button class="green" id="changeAdminKey">Ganti Kunci Admin</button><p id="passwordMsg" class="muted"></p></div>
-<div class="panel"><h2>Impor / ekspor</h2><p class="muted">Soal duplikat akan dilewati.</p><div class="actions"><label class="filelabel">Pilih JSON / GZIP<input id="import" type="file" accept=".json,.gz,.json.gz,application/json,application/gzip" hidden></label><button class="green" id="importServerGzip">Impor GZIP dari Server</button><button id="export">Ekspor JSON</button></div><p class="muted">Pilih file GZIP dari perangkat atau impor langsung file bank yang ikut diunggah ke GitHub.</p></div>
+<div class="panel"><h2>Impor / ekspor</h2><p class="muted">Soal duplikat akan dilewati.</p><div class="actions"><label class="filelabel">Pilih JSON / GZIP<input id="import" type="file" accept=".json,.gz,.json.gz,application/json,application/gzip" hidden></label><button class="green" id="importServerGzip">Impor GZIP dari Server</button><button id="export">Ekspor JSON</button><button class="green" id="repairIndex">Pulihkan Indeks Bank</button></div><p class="muted">Pilih file GZIP dari perangkat atau impor langsung file bank yang ikut diunggah ke GitHub.</p></div>
 <div class="panel"><h2>Perbaiki atau hapus data</h2><div id="manageList" class="muted">Memuat...</div></div>
 </section>
 </main>
@@ -104,6 +104,24 @@ async function runBankImport(stream,label){let batch=[],added=0,duplicates=0,ski
 async function importFile(file){let stream=file.stream();if(file.name.toLowerCase().endsWith('.gz')){if(!('DecompressionStream' in window))throw Error('Browser belum mendukung GZIP. Gunakan Chrome terbaru.');stream=stream.pipeThrough(new DecompressionStream('gzip'))}await runBankImport(stream,file.name)}
 $('import').onchange=async e=>{try{const file=e.target.files[0];if(file)await importFile(file)}catch(err){alert('Impor gagal: '+err.message+'\nJika terputus, ulangi impor; data yang sudah masuk akan dilewati.')}e.target.value=''};
 $('importServerGzip').onclick=async()=>{const b=$('importServerGzip');b.disabled=true;try{if(!('DecompressionStream' in window))throw Error('Browser belum mendukung GZIP. Gunakan Chrome terbaru.');const r=await fetch('/bank_soal_smart_aira_ai.json.gz',{cache:'no-store'});if(!r.ok)throw Error('File GZIP tidak ditemukan di server. Pastikan file ikut diunggah ke GitHub dan deploy.');await runBankImport(r.body.pipeThrough(new DecompressionStream('gzip')),'Bank GZIP dari server')}catch(e){alert('Impor GZIP gagal: '+e.message)}finally{b.disabled=false}};
+
+$('repairIndex').onclick=async()=>{
+ const b=$('repairIndex'); if(!confirm('Pulihkan indeks dari seluruh soal yang sudah tersimpan? Data soal tidak akan dihapus.'))return;
+ b.disabled=true; $('saveMsg').textContent='Memulai pemulihan indeks...';
+ try{
+  let r=await fetch('/.netlify/functions/repair-index',{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':adminKey},body:JSON.stringify({action:'start'})});
+  let j=await r.json(); if(!r.ok)throw Error(j.error||'Gagal memulai');
+  while(!j.done){
+   r=await fetch('/.netlify/functions/repair-index',{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':adminKey},body:JSON.stringify({action:'step'})});
+   j=await r.json();if(!r.ok)throw Error(j.error||'Pemulihan terhenti');
+   $('saveMsg').textContent=`Pemulihan indeks: ${Number(j.processed||0).toLocaleString('id-ID')} data diperiksa...`;
+  }
+  $('saveMsg').textContent=`Pemulihan selesai. ${Number(j.total||0).toLocaleString('id-ID')} soal ditemukan.`;
+  await loadManage();
+ }catch(e){alert('Pemulihan gagal: '+e.message+' Data soal tidak dihapus.');}
+ finally{b.disabled=false;}
+};
+
 if(adminKey)checkAdmin(adminKey).catch(()=>{adminKey='';sessionStorage.removeItem('smartAiraAdminKey')});
 $('manageTab').classList.toggle('hidden',!adminKey);
 </script></body></html>
