@@ -20,9 +20,13 @@ export default async function handler(request){
   const body=await request.json(),action=body.action;
   if(action==="start"){
    const old=await store.get("repair-state",{type:"json"});
-   if(old&&!old.done)return reply({error:"Pemulihan sebelumnya masih berjalan. Lanjutkan dengan tombol Pulihkan Indeks."},409);
+   // Resume an unfinished run instead of rejecting it. This avoids a stuck
+   // state when the browser was closed or a previous request timed out.
+   if(old&&!old.done){
+    return reply({ok:true,done:false,resumed:true,processed:old.processed||0});
+   }
    await store.setJSON("repair-state",{cursor:null,processed:0,ids:[],done:false,startedAt:new Date().toISOString()});
-   return reply({ok:true,done:false,processed:0});
+   return reply({ok:true,done:false,resumed:false,processed:0});
   }
   if(action==="step"){
    const state=await store.get("repair-state",{type:"json"});
