@@ -110,7 +110,7 @@ $('importServerGzip').onclick=async()=>{const b=$('importServerGzip');b.disabled
 
 $('repairIndex').onclick=async()=>{
  const b=$('repairIndex'); if(!confirm('Pulihkan indeks dari seluruh soal yang sudah tersimpan? Data soal tidak akan dihapus.'))return;
- b.disabled=true; $('saveMsg').textContent='Memulai pemulihan indeks...';
+ b.disabled=true; $('saveMsg').textContent='Melanjutkan / memulai pemulihan indeks...';
  try{
   let r=await fetch('/.netlify/functions/repair-index',{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':adminKey},body:JSON.stringify({action:'start'})});
   let j=await r.json(); if(!r.ok)throw Error(j.error||'Gagal memulai');
@@ -119,7 +119,7 @@ $('repairIndex').onclick=async()=>{
    j=await r.json();if(!r.ok)throw Error(j.error||'Pemulihan terhenti');
    $('saveMsg').textContent=`Pemulihan indeks: ${Number(j.processed||0).toLocaleString('id-ID')} data diperiksa...`;
   }
-  $('saveMsg').textContent=`Pemulihan selesai. ${Number(j.total||0).toLocaleString('id-ID')} soal ditemukan.`;
+  $('saveMsg').textContent=`Pemulihan selesai. ${Number(j.total||0).toLocaleString('id-ID')} soal ditemukan. Indeks pencarian telah dibangun ulang.`;
   await loadManage();
  }catch(e){alert('Pemulihan gagal: '+e.message+' Data soal tidak dihapus.');}
  finally{b.disabled=false;}
