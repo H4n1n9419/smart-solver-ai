@@ -52,7 +52,19 @@ video{width:100%;max-height:40vh;background:#05080d;border-radius:12px;display:n
 const $=id=>document.getElementById(id), norm=s=>(s||'').toLowerCase().normalize('NFKC').replace(/\s+/g,' ').trim();
 let stream=null,timer=null,ocr=null,adminKey=sessionStorage.getItem('smartAiraAdminKey')||'',cache=[];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(data,key=adminKey){let h={'Content-Type':'application/json'};if(key)h['x-admin-key']=key;let r=await fetch('/.netlify/functions/knowledge',{method:'POST',headers:h,body:JSON.stringify(data)});let j=await r.json();if(!r.ok)throw Error(j.error||'Permintaan gagal');return j}
+async function api(data,key=adminKey){let h={'Content-Type':'application/json'};if(key)h['x-admin-key']=key;const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),25000);let r;try{r=await fetch('/.netlify/functions/knowledge',{method:'POST',headers:h,body:JSON.stringify(data),signal:ctrl.signal})}catch(e){throw Error(e.name==='AbortError'?'Koneksi terlalu lambat (timeout)':e.message)}finally{clearTimeout(t)}let j=await r.json();if(!r.ok)throw Error(j.error||'Permintaan gagal');return j}
+// Retries a flaky/slow-network call a few times with backoff instead of giving up on the first drop.
+async function withRetry(fn,label,maxTries=6){
+ for(let attempt=1;attempt<=maxTries;attempt++){
+  try{return await fn()}
+  catch(e){
+   if(attempt===maxTries)throw e;
+   const wait=Math.min(20000,1000*2**(attempt-1));
+   if(label)$('saveMsg').textContent=`${label}: koneksi lambat/terputus (percobaan ${attempt}/${maxTries}: ${e.message}). Mencoba lagi dalam ${Math.round(wait/1000)} detik...`;
+   await new Promise(res=>setTimeout(res,wait));
+  }
+ }
+}
 function showTab(name){if(name==='manage'&&!adminKey)name='login';['scan','bank','manage','login'].forEach(x=>$(x).classList.toggle('hidden',x!==name));document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));$('manageTab').classList.toggle('hidden',!adminKey);if(name!=='scan')stopCamera();if(name==='bank')loadBank();if(name==='manage')loadManage()}
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 async function checkAdmin(k){await api({action:'admin-check'},k)}
@@ -98,25 +110,44 @@ async function* streamJsonArray(stream){
  const reader=stream.pipeThrough(new TextDecoderStream()).getReader();let depth=0,inString=false,escape=false,obj='';
  try{while(true){const {value,done}=await reader.read();if(done)break;for(const ch of value){if(depth===0){if(ch==='{'){depth=1;obj='{'}else if(ch===']')return;continue}obj+=ch;if(inString){if(escape)escape=false;else if(ch==='\\')escape=true;else if(ch==='\"')inString=false;continue}if(ch==='\"'){inString=true;continue}if(ch==='{')depth++;else if(ch==='}')depth--;if(depth===0){yield JSON.parse(obj);obj=''}}}}finally{reader.releaseLock()}
 }
-async function runBankImport(stream,label){let batch=[],added=0,duplicates=0,skipped=0,processed=0;
- $('saveMsg').textContent='Menyiapkan '+label+'...';
- for await(const item of streamJsonArray(stream)){batch.push(item);if(batch.length===100){const r=await api({action:'bulk-add',items:batch});added+=r.added||0;duplicates+=r.duplicates||0;skipped+=r.skipped||0;processed+=batch.length;batch=[];$('saveMsg').textContent=`${label}: diproses ${processed.toLocaleString('id-ID')} · masuk ${added.toLocaleString('id-ID')} · duplikat ${duplicates.toLocaleString('id-ID')}`}}
- if(batch.length){const r=await api({action:'bulk-add',items:batch});added+=r.added||0;duplicates+=r.duplicates||0;skipped+=r.skipped||0;processed+=batch.length}
+async function runBankImport(stream,label){
+ const resumeKey='smartAiraImportResume:'+label;
+ let resumeFrom=0;try{const saved=JSON.parse(localStorage.getItem(resumeKey)||'null');if(saved?.processed)resumeFrom=saved.processed}catch{}
+ let batch=[],added=0,duplicates=0,skipped=0,processed=0,skippedForResume=0;
+ $('saveMsg').textContent=resumeFrom?`Melanjutkan ${label} dari soal ke-${resumeFrom.toLocaleString('id-ID')} (percobaan sebelumnya terputus)...`:'Menyiapkan '+label+'...';
+ const flush=async()=>{
+  if(!batch.length)return;
+  const r=await withRetry(()=>api({action:'bulk-add',items:batch}),label);
+  added+=r.added||0;duplicates+=r.duplicates||0;skipped+=r.skipped||0;processed+=batch.length;batch=[];
+  localStorage.setItem(resumeKey,JSON.stringify({processed}));
+  $('saveMsg').textContent=`${label}: diproses ${processed.toLocaleString('id-ID')} · masuk ${added.toLocaleString('id-ID')} · duplikat ${duplicates.toLocaleString('id-ID')}`;
+ };
+ for await(const item of streamJsonArray(stream)){
+  if(skippedForResume<resumeFrom){skippedForResume++;processed++;continue}
+  batch.push(item);
+  if(batch.length===100)await flush();
+ }
+ await flush();
+ localStorage.removeItem(resumeKey);
  $('saveMsg').textContent=`Impor selesai: ${processed.toLocaleString('id-ID')} diproses, ${added.toLocaleString('id-ID')} ditambahkan, ${duplicates.toLocaleString('id-ID')} duplikat, ${skipped.toLocaleString('id-ID')} dilewati.`;loadManage();
 }
 async function importFile(file){let stream=file.stream();if(file.name.toLowerCase().endsWith('.gz')){if(!('DecompressionStream' in window))throw Error('Browser belum mendukung GZIP. Gunakan Chrome terbaru.');stream=stream.pipeThrough(new DecompressionStream('gzip'))}await runBankImport(stream,file.name)}
-$('import').onchange=async e=>{try{const file=e.target.files[0];if(file)await importFile(file)}catch(err){alert('Impor gagal: '+err.message+'\nJika terputus, ulangi impor; data yang sudah masuk akan dilewati.')}e.target.value=''};
-$('importServerGzip').onclick=async()=>{const b=$('importServerGzip');b.disabled=true;try{if(!('DecompressionStream' in window))throw Error('Browser belum mendukung GZIP. Gunakan Chrome terbaru.');const r=await fetch('/bank_soal_smart_aira_ai.json.gz',{cache:'no-store'});if(!r.ok)throw Error('File GZIP tidak ditemukan di server. Pastikan file ikut diunggah ke GitHub dan deploy.');await runBankImport(r.body.pipeThrough(new DecompressionStream('gzip')),'Bank GZIP dari server')}catch(e){alert('Impor GZIP gagal: '+e.message)}finally{b.disabled=false}};
+$('import').onchange=async e=>{try{const file=e.target.files[0];if(file)await importFile(file)}catch(err){alert('Impor gagal: '+err.message+'\nKoneksi sempat gagal berkali-kali. Tekan impor yang sama lagi (file yang sama) - proses akan otomatis lanjut dari titik terakhir, bukan dari awal.')}e.target.value=''};
+$('importServerGzip').onclick=async()=>{const b=$('importServerGzip');b.disabled=true;try{if(!('DecompressionStream' in window))throw Error('Browser belum mendukung GZIP. Gunakan Chrome terbaru.');const r=await fetch('/bank_soal_smart_aira_ai.json.gz',{cache:'no-store'});if(!r.ok)throw Error('File GZIP tidak ditemukan di server. Pastikan file ikut diunggah ke GitHub dan deploy.');await runBankImport(r.body.pipeThrough(new DecompressionStream('gzip')),'Bank GZIP dari server')}catch(e){alert('Impor GZIP gagal: '+e.message+'\nTekan tombol ini lagi - proses akan otomatis lanjut dari titik terakhir, bukan dari awal. Sebaiknya pakai WiFi yang stabil dan jangan kunci layar/pindah aplikasi selama proses berjalan.')}finally{b.disabled=false}};
 
 $('repairIndex').onclick=async()=>{
  const b=$('repairIndex'); if(!confirm('Pulihkan indeks dari seluruh soal yang sudah tersimpan? Data soal tidak akan dihapus.'))return;
  b.disabled=true; $('saveMsg').textContent='Melanjutkan / memulai pemulihan indeks...';
+ const repairCall=async(action)=>{
+  const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),25000);let r;
+  try{r=await fetch('/.netlify/functions/repair-index',{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':adminKey},body:JSON.stringify({action}),signal:ctrl.signal})}
+  catch(e){throw Error(e.name==='AbortError'?'Koneksi terlalu lambat (timeout)':e.message)}finally{clearTimeout(t)}
+  const j=await r.json();if(!r.ok)throw Error(j.error||(action==='start'?'Gagal memulai':'Pemulihan terhenti'));return j;
+ };
  try{
-  let r=await fetch('/.netlify/functions/repair-index',{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':adminKey},body:JSON.stringify({action:'start'})});
-  let j=await r.json(); if(!r.ok)throw Error(j.error||'Gagal memulai');
+  let j=await withRetry(()=>repairCall('start'),'Pemulihan indeks');
   while(!j.done){
-   r=await fetch('/.netlify/functions/repair-index',{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':adminKey},body:JSON.stringify({action:'step'})});
-   j=await r.json();if(!r.ok)throw Error(j.error||'Pemulihan terhenti');
+   j=await withRetry(()=>repairCall('step'),'Pemulihan indeks');
    $('saveMsg').textContent=`Pemulihan indeks: ${Number(j.processed||0).toLocaleString('id-ID')} data diperiksa...`;
   }
   $('saveMsg').textContent=`Pemulihan selesai. ${Number(j.total||0).toLocaleString('id-ID')} soal ditemukan. Indeks pencarian telah dibangun ulang.`;
