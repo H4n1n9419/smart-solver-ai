@@ -9,7 +9,15 @@ const words=v=>[...new Set(norm(v).split(/[^\p{L}\p{N}]+/u).filter(x=>x.length>1
 const qkey=id=>`q:${id}`, pairKey=x=>`pair:${sha(norm(x.question)+"\u0000"+norm(x.answer))}`;
 const shard=id=>String(id).replace(/-/g,"")[0]||"0";
 const tokKey=(token,b)=>`tok2:${sha(token)}:${b}`;
-const MAX_BATCH=100, SHARDS="0123456789abcdef";
+const MAX_BATCH=100, SHARDS="0123456789abcdef", CONCURRENCY=20;
+// Runs up to `limit` calls to fn() at once instead of one-at-a-time; this is the
+// single biggest fix for timeouts on large imports (Blobs round-trips were serial before).
+async function mapLimit(items,limit,fn){
+ const results=new Array(items.length);let idx=0;
+ async function worker(){while(idx<items.length){const i=idx++;results[i]=await fn(items[i],i);}}
+ await Promise.all(Array.from({length:Math.min(limit,items.length)||0},worker));
+ return results;
+}
 async function verifyAdmin(store,k){
  const saved=await store.get("admin-password",{type:"json"});
  if(!saved)return !!process.env.KNOWLEDGE_ADMIN_KEY&&k===process.env.KNOWLEDGE_ADMIN_KEY;
@@ -36,28 +44,10 @@ async function callAI(provider,prompt){
  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${key}`,...headers},body:JSON.stringify({model,messages:[{role:"system",content:"Kamu asisten SMART AIRA. Jawab Bahasa Indonesia, jelas, langsung, dan jangan mengarang fakta."},{role:"user",content:prompt}],temperature:.2,max_tokens:900}),signal});
  const j=await r.json();if(!r.ok)throw Error(j.error?.message||`${provider} ${r.status}`);return j.choices?.[0]?.message?.content?.trim()||"";
 }
-async function addRecord(store,item,cache){
- const question=String(item?.question??item?.soal??"").trim(),answer=String(item?.answer??item?.jawaban??"").trim();
- if(!question||!answer)return "skipped";
- const pair=pairKey({question,answer});
- if(await store.get(pair))return "duplicate";
- const id=crypto.randomUUID(),record={id,question,answer,updatedAt:new Date().toISOString()};
- await store.setJSON(qkey(id),record);
- await store.set(pair,id);
- const b=shard(id);
- for(const t of words(question)){
-  const k=tokKey(t,b);
-  if(!cache.has(k))cache.set(k,new Set(await store.get(k,{type:"json"})||[]));
-  cache.get(k).add(id);
- }
- return "added";
-}
-async function flushCache(store,cache){for(const [k,v] of cache)await store.setJSON(k,[...v]);}
 async function listPage(store,cursor,limit){
  const p=await store.list({prefix:"q:",...(cursor?{cursor}:{}),limit});
- const items=[];
- for(const b of p.blobs||[]){const x=await store.get(b.key,{type:"json"});if(x)items.push(x);}
- return {items,cursor:p.cursor||null};
+ const items=await mapLimit(p.blobs||[],CONCURRENCY,b=>store.get(b.key,{type:"json"}));
+ return {items:items.filter(Boolean),cursor:p.cursor||null};
 }
 export default async function handler(req){
  if(req.method!=="POST")return reply({error:"Method not allowed"},405);
@@ -73,9 +63,34 @@ export default async function handler(req){
   if(action==="add"||action==="bulk-add"){
    const arr=action==="add"?[body]:body.items;if(!Array.isArray(arr)||!arr.length)return reply({error:"Data kosong atau format salah"},400);
    if(arr.length>MAX_BATCH)return reply({error:"Maksimal 100 pasangan per batch"},413);
-   const cache=new Map();let added=0,duplicates=0,skipped=0;
-   for(const item of arr){const x=await addRecord(store,item,cache);if(x==="added")added++;else if(x==="duplicate")duplicates++;else skipped++;}
-   await flushCache(store,cache);
+   // 1) Normalize + drop invalid/in-batch-duplicate pairs (no store calls yet, instant).
+   const prepared=arr.map(item=>{
+    const question=String(item?.question??item?.soal??"").trim(),answer=String(item?.answer??item?.jawaban??"").trim();
+    if(!question||!answer)return {status:"skipped"};
+    return {status:"pending",question,answer,pair:pairKey({question,answer})};
+   });
+   const seenPairs=new Set();
+   for(const p of prepared){if(p.status!=="pending")continue;if(seenPairs.has(p.pair)){p.status="duplicate";continue;}seenPairs.add(p.pair);}
+   const pending=prepared.filter(p=>p.status==="pending");
+   // 2) Duplicate-check against store, in parallel (was: one store.get() per item, serial).
+   const owners=await mapLimit(pending,CONCURRENCY,p=>store.get(p.pair));
+   pending.forEach((p,i)=>{if(owners[i])p.status="duplicate";});
+   const toAdd=pending.filter(p=>p.status==="pending");
+   const records=toAdd.map(p=>{const id=crypto.randomUUID();return {id,pair:p.pair,question:p.question,answer:p.answer,record:{id,question:p.question,answer:p.answer,updatedAt:new Date().toISOString()}};});
+   // 3) Write the new question + pair-index records, in parallel.
+   const writeOps=records.flatMap(r=>[()=>store.setJSON(qkey(r.id),r.record),()=>store.set(r.pair,r.id)]);
+   await mapLimit(writeOps,CONCURRENCY,op=>op());
+   // 4) Pull in the existing search-index postings this batch touches, in parallel,
+   //    then merge the new ids in memory and flush, in parallel. (Was: one store.get()
+   //    per unique token per item, serial — this was the main source of timeouts.)
+   const perRecordTokens=records.map(r=>{const b=shard(r.id);return {id:r.id,keys:words(r.question).map(t=>tokKey(t,b))};});
+   const neededKeys=new Set();perRecordTokens.forEach(r=>r.keys.forEach(k=>neededKeys.add(k)));
+   const keyList=[...neededKeys];
+   const existing=await mapLimit(keyList,CONCURRENCY,k=>store.get(k,{type:"json"}));
+   const cache=new Map();keyList.forEach((k,i)=>cache.set(k,new Set(existing[i]||[])));
+   perRecordTokens.forEach(r=>r.keys.forEach(k=>cache.get(k).add(r.id)));
+   await mapLimit([...cache],CONCURRENCY,([k,v])=>store.setJSON(k,[...v]));
+   const added=records.length,duplicates=prepared.filter(p=>p.status==="duplicate").length,skipped=prepared.filter(p=>p.status==="skipped").length;
    const count=await store.get("meta:count",{type:"json"})||{count:0};count.count+=added;await store.setJSON("meta:count",count);
    return reply({ok:true,added,duplicates,skipped,total:count.count});
   }
@@ -92,7 +107,8 @@ export default async function handler(req){
     const old=await store.get(`tok:${sha(t)}`,{type:"json"})||[];
     for(const id of old.slice(-500))candidates.add(id);
    }
-   const rows=await Promise.all([...candidates].slice(0,4000).map(id=>store.get(qkey(id),{type:"json"})));
+   const idList=[...candidates].slice(0,4000);
+   const rows=await mapLimit(idList,CONCURRENCY,id=>store.get(qkey(id),{type:"json"}));
    const results=rows.filter(Boolean).map(x=>{const ws=new Set(words(x.question));let n=0;for(const t of terms)if(ws.has(t))n++;return {...x,score:terms.length?n/terms.length:0};}).filter(x=>x.score>=.2).sort((a,b)=>b.score-a.score).slice(0,20);
    return reply({results,searched:candidates.size});
   }
@@ -119,7 +135,7 @@ export default async function handler(req){
     const k=tokKey(t,bucket);if(!c.has(k))c.set(k,new Set(await store.get(k,{type:"json"})||[]));
     if(words(question).includes(t))c.get(k).add(old.id);else c.get(k).delete(old.id);
    }
-   await flushCache(store,c);
+   await mapLimit([...c],CONCURRENCY,([k,v])=>store.setJSON(k,[...v]));
    return reply({ok:true,item:updated});
   }
   if(action==="delete"){
