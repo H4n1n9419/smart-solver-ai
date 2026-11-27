@@ -18,6 +18,7 @@ video{width:100%;max-height:40vh;background:#05080d;border-radius:12px;display:n
 .result,.item{border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:9px}.q{font-weight:700;margin-bottom:6px}.answer{color:#d8fbe8;background:#123528;border:1.5px solid #19a66a;border-radius:10px;padding:10px 12px;margin-top:7px;white-space:pre-wrap;font-weight:700;line-height:1.5}.aiAnswer{color:#d8fbe8;background:#123528;border:2px solid #19a66a;border-radius:12px;padding:13px 14px;margin-top:7px;white-space:pre-wrap;font-size:16px;font-weight:800;line-height:1.55}.aiAnswer::before{content:'JAWABAN AI';display:block;color:#73e3ad;font-size:11px;font-weight:900;letter-spacing:1.2px;margin-bottom:6px}
 .hidden{display:none!important}.bottom{position:fixed;bottom:0;left:0;right:0;padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:#0a111df5;border-top:1px solid var(--line)}.bottom button{width:100%;min-height:54px;background:var(--green);font-size:16px}
 .admin{background:#214b3b;color:#baf2d3;border-radius:20px;padding:5px 9px;font-size:12px}
+.scrollbox{max-height:640px;overflow-y:auto;padding-right:4px;margin-top:4px}
 </style></head>
 <body>
 <header><h1>SMART AIRA AI</h1><p>Baca soal • Cari bank soal online • Kelola jawaban</p></header>
@@ -42,8 +43,9 @@ video{width:100%;max-height:40vh;background:#05080d;border-radius:12px;display:n
 <div class="panel"><h2>Tambah soal dan jawaban</h2><label>Soal</label><textarea id="newQ" placeholder="Masukkan pertanyaan..."></textarea><label>Jawaban</label><textarea id="newA" placeholder="Masukkan jawaban yang sudah diperiksa..."></textarea><button class="green" id="save">Simpan ke Bank Online</button><p id="saveMsg" class="muted"></p></div>
 <div class="panel"><h2>AI cadangan</h2><p class="muted">Urutan otomatis: Gemini → Groq → Mistral → Cloudflare Workers AI → OpenRouter. API key diatur melalui Environment Variables Netlify: GEMINI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CF_ACCOUNT_ID, CF_API_TOKEN, OPENROUTER_API_KEY. Provider yang belum memiliki API key akan dilewati.</p></div>
 <div class="panel"><h2>Keamanan Admin</h2><p class="muted">Ganti kunci admin tanpa membuka pengaturan Netlify. Gunakan kunci baru minimal 12 karakter.</p><label>Kunci admin saat ini</label><input id="oldAdminKey" type="password" autocomplete="current-password" placeholder="Kunci saat ini"><label>Kunci admin baru</label><input id="newAdminKey" type="password" autocomplete="new-password" placeholder="Minimal 12 karakter"><label>Ulangi kunci admin baru</label><input id="confirmAdminKey" type="password" autocomplete="new-password" placeholder="Ulangi kunci baru"><button class="green" id="changeAdminKey">Ganti Kunci Admin</button><p id="passwordMsg" class="muted"></p></div>
-<div class="panel"><h2>Impor / ekspor</h2><p class="muted">Soal duplikat akan dilewati.</p><div class="actions"><label class="filelabel">Pilih JSON / GZIP<input id="import" type="file" accept=".json,.gz,.json.gz,application/json,application/gzip" hidden></label><button class="green" id="importServerGzip">Impor GZIP dari Server</button><button id="export">Ekspor JSON</button><button class="green" id="repairIndex">Pulihkan Indeks Bank</button></div><p class="muted">Pilih file GZIP dari perangkat atau impor langsung file bank yang ikut diunggah ke GitHub.</p></div>
-<div class="panel"><h2>Perbaiki atau hapus data</h2><input id="manageSearch" placeholder="Cari soal untuk diedit atau dihapus..." autocomplete="off"><p class="muted">Ketik kata kunci untuk mencari soal di indeks bank.</p><div id="manageList" class="muted">Memuat...</div></div>
+<div class="panel"><h2>Impor / ekspor</h2><p class="muted">Soal duplikat akan dilewati.</p><div class="actions"><label class="filelabel">Pilih JSON / GZIP<input id="import" type="file" accept=".json,.gz,.json.gz,application/json,application/gzip" hidden></label><button class="green" id="importServerGzip">Impor GZIP dari Server</button><button id="export">Ekspor JSON</button></div><p class="muted">Pilih file GZIP dari perangkat atau impor langsung file bank yang ikut diunggah ke GitHub.</p></div>
+<div class="panel"><h2>Hapus semua data (mulai dari 0)</h2><p class="muted">Hanya untuk mengulang impor dari awal secara bersih. Menghapus SELURUH soal, jawaban, dan indeks pencarian (kunci admin tidak ikut terhapus). Tidak bisa dibatalkan.</p><button class="danger" id="wipeAll">Hapus Semua Data</button><p id="wipeMsg" class="muted"></p></div>
+<div class="panel"><h2>Perbaiki atau hapus data</h2><input id="manageSearch" placeholder="Cari soal untuk diedit atau dihapus..." autocomplete="off"><p class="muted">Ketik kata kunci untuk mencari soal di indeks bank.</p><div id="manageCount" class="count"></div><div id="manageList" class="muted scrollbox">Memuat...</div></div>
 </section>
 </main>
 <div class="bottom"><button id="bottomLive">◎ BACA LANGSUNG</button></div><canvas id="canvas" class="hidden"></canvas>
@@ -85,7 +87,7 @@ function renderBank(a){$('bankList').innerHTML=a.map(x=>`<div class="item"><div 
 $('search').oninput=async()=>{let q=$('search').value;if(!q){renderBank(cache);return}try{let j=await api({action:'search',query:q},'');renderBank(j.results||[])}catch(e){$('bankList').textContent=e.message}};
 $('save').onclick=async()=>{try{let j=await api({action:'add',question:$('newQ').value,answer:$('newA').value});$('saveMsg').textContent=j.duplicate?'Soal sama sudah tersimpan.':'Soal berhasil ditambahkan.';$('newQ').value='';$('newA').value='';loadManage()}catch(e){$('saveMsg').textContent='Gagal menyimpan: '+e.message}};
 function renderManage(items){cache=items||[];$('manageList').innerHTML=cache.map(x=>`<div class="item"><b>${esc(x.question)}</b><div class="answer">${esc(x.answer)}</div><div class="actions"><button onclick="editQ('${x.id}')">Edit</button><button class="danger" onclick="deleteQ('${x.id}')">Hapus</button></div></div>`).join('')||'Tidak ada soal yang cocok.'}
-async function loadManage(){try{let j=await api({action:'list',limit:100});renderManage(j.items||[])}catch(e){$('manageList').textContent='Gagal memuat: '+e.message}}
+async function loadManage(){try{let j=await api({action:'list',limit:100});$('manageCount').textContent=`Total tersimpan: ${Number(j.total||0).toLocaleString('id-ID')} soal (menampilkan ${(j.items||[]).length} terbaru di bawah, bisa digulir)`;renderManage(j.items||[])}catch(e){$('manageList').textContent='Gagal memuat: '+e.message}}
 let manageSearchTimer=null;
 $('manageSearch').oninput=()=>{clearTimeout(manageSearchTimer);const q=$('manageSearch').value.trim();if(!q){loadManage();return}manageSearchTimer=setTimeout(async()=>{$('manageList').textContent='Mencari...';try{const j=await api({action:'search',query:q});renderManage(j.results||[])}catch(e){$('manageList').textContent='Pencarian gagal: '+e.message}},350)};
 window.editQ=async id=>{let x=cache.find(z=>z.id===id);if(!x)return;let q=prompt('Edit soal',x.question);if(q===null)return;let a=prompt('Edit jawaban',x.answer);if(a===null)return;try{await api({action:'update',id,question:q,answer:a});loadManage()}catch(e){alert(e.message)}};
@@ -135,27 +137,17 @@ async function importFile(file){let stream=file.stream();if(file.name.toLowerCas
 $('import').onchange=async e=>{try{const file=e.target.files[0];if(file)await importFile(file)}catch(err){alert('Impor gagal: '+err.message+'\nKoneksi sempat gagal berkali-kali. Tekan impor yang sama lagi (file yang sama) - proses akan otomatis lanjut dari titik terakhir, bukan dari awal.')}e.target.value=''};
 $('importServerGzip').onclick=async()=>{const b=$('importServerGzip');b.disabled=true;try{if(!('DecompressionStream' in window))throw Error('Browser belum mendukung GZIP. Gunakan Chrome terbaru.');const r=await fetch('/bank_soal_smart_aira_ai.json.gz',{cache:'no-store'});if(!r.ok)throw Error('File GZIP tidak ditemukan di server. Pastikan file ikut diunggah ke GitHub dan deploy.');await runBankImport(r.body.pipeThrough(new DecompressionStream('gzip')),'Bank GZIP dari server')}catch(e){alert('Impor GZIP gagal: '+e.message+'\nTekan tombol ini lagi - proses akan otomatis lanjut dari titik terakhir, bukan dari awal. Sebaiknya pakai WiFi yang stabil dan jangan kunci layar/pindah aplikasi selama proses berjalan.')}finally{b.disabled=false}};
 
-$('repairIndex').onclick=async()=>{
- const b=$('repairIndex'); if(!confirm('Pulihkan indeks dari seluruh soal yang sudah tersimpan? Data soal tidak akan dihapus.'))return;
- b.disabled=true; $('saveMsg').textContent='Melanjutkan / memulai pemulihan indeks...';
- const repairCall=async(action)=>{
-  const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),25000);let r;
-  try{r=await fetch('/.netlify/functions/repair-index',{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':adminKey},body:JSON.stringify({action}),signal:ctrl.signal})}
-  catch(e){throw Error(e.name==='AbortError'?'Koneksi terlalu lambat (timeout)':e.message)}finally{clearTimeout(t)}
-  const j=await r.json();if(!r.ok)throw Error(j.error||(action==='start'?'Gagal memulai':'Pemulihan terhenti'));return j;
- };
+$('wipeAll').onclick=async()=>{
+ const typed=prompt('Ini akan MENGHAPUS SEMUA soal, jawaban, dan indeks (tidak bisa dibatalkan).\nKetik persis: HAPUS SEMUA\nuntuk melanjutkan.');
+ if(typed!=='HAPUS SEMUA'){if(typed!==null)alert('Dibatalkan: teks konfirmasi tidak cocok.');return}
+ const b=$('wipeAll');b.disabled=true;$('wipeMsg').textContent='Menghapus semua data...';
  try{
-  let j=await withRetry(()=>repairCall('start'),'Pemulihan indeks');
-  while(!j.done){
-   j=await withRetry(()=>repairCall('step'),'Pemulihan indeks');
-   $('saveMsg').textContent=`Pemulihan indeks: ${Number(j.processed||0).toLocaleString('id-ID')} data diperiksa...`;
-  }
-  $('saveMsg').textContent=`Pemulihan selesai. ${Number(j.total||0).toLocaleString('id-ID')} soal ditemukan. Indeks pencarian telah dibangun ulang.`;
-  await loadManage();
- }catch(e){alert('Pemulihan gagal: '+e.message+' Data soal tidak dihapus.');}
- finally{b.disabled=false;}
+  const j=await withRetry(()=>api({action:'wipe',confirm:'HAPUS SEMUA'}),'Hapus data');
+  $('wipeMsg').textContent=`Selesai: ${Number(j.deleted||0).toLocaleString('id-ID')} entri dihapus. Silakan mulai impor dari awal.`;
+  loadManage();loadBank();
+ }catch(e){$('wipeMsg').textContent='Gagal: '+e.message}
+ finally{b.disabled=false}
 };
-
 if(adminKey)checkAdmin(adminKey).catch(()=>{adminKey='';sessionStorage.removeItem('smartAiraAdminKey')});
 $('manageTab').classList.toggle('hidden',!adminKey);
 </script></body></html>
