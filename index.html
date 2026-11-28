@@ -29,7 +29,7 @@ video{width:100%;max-height:40vh;background:#05080d;border-radius:12px;display:n
 <button class="tab hidden" id="manageTab" data-tab="manage">Kelola Data</button>
 </nav>
 <section id="scan">
-<div class="panel"><h2>Baca soal</h2><p class="muted">Arahkan kamera HP ini ke layar HP lain. Pembacaan langsung dilakukan berkala. Izinkan akses kamera.</p>
+<div class="panel"><h2>Baca soal</h2><p class="muted">Arahkan kamera HP ini ke layar HP lain. AI membaca gambar setiap 5 detik, langsung memisahkan soal dan pilihan jawaban. Izinkan akses kamera.</p>
 <div class="actions"><button class="green" id="start">▶ Mulai Baca Langsung</button><button id="stop">■ Berhenti</button></div>
 <video id="video" autoplay playsinline muted></video>
 <div class="actions" style="margin-top:9px"><button id="photo">Ambil Foto</button><label class="filelabel">Upload Screenshot<input id="upload" type="file" accept="image/*" hidden></label></div>
@@ -49,10 +49,9 @@ video{width:100%;max-height:40vh;background:#05080d;border-radius:12px;display:n
 </section>
 </main>
 <div class="bottom"><button id="bottomLive">◎ BACA LANGSUNG</button></div><canvas id="canvas" class="hidden"></canvas>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 const $=id=>document.getElementById(id), norm=s=>(s||'').toLowerCase().normalize('NFKC').replace(/\s+/g,' ').trim();
-let stream=null,timer=null,ocr=null,adminKey=sessionStorage.getItem('smartAiraAdminKey')||'',cache=[];
+let stream=null,timer=null,adminKey=sessionStorage.getItem('smartAiraAdminKey')||'',cache=[];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(data,key=adminKey){let h={'Content-Type':'application/json'};if(key)h['x-admin-key']=key;const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),25000);let r;try{r=await fetch('/.netlify/functions/knowledge',{method:'POST',headers:h,body:JSON.stringify(data),signal:ctrl.signal})}catch(e){throw Error(e.name==='AbortError'?'Koneksi terlalu lambat (timeout)':e.message)}finally{clearTimeout(t)}let j=await r.json();if(!r.ok)throw Error(j.error||'Permintaan gagal');return j}
 // Retries a flaky/slow-network call a few times with backoff instead of giving up on the first drop.
@@ -72,15 +71,25 @@ document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>showTab(b.datas
 async function checkAdmin(k){await api({action:'admin-check'},k)}
 $('loginBtn').onclick=async()=>{let k=$('adminInput').value.trim();$('loginMsg').textContent='Memeriksa...';try{await checkAdmin(k);adminKey=k;sessionStorage.setItem('smartAiraAdminKey',k);showTab('manage')}catch(e){$('loginMsg').textContent='Login gagal: '+e.message}};
 $('logout').onclick=()=>{adminKey='';sessionStorage.removeItem('smartAiraAdminKey');showTab('scan')};
-async function getOCR(){if(!window.Tesseract)throw Error('Mesin OCR belum termuat. Periksa internet.');if(!ocr)ocr=await Tesseract.createWorker('ind+eng');return ocr}
-async function readImage(img){$('status').textContent='Membaca teks...';try{let w=await getOCR(),r=await w.recognize(img),t=r.data.text.trim();$('recognized').value=t;$('status').textContent=t?'Pembacaan selesai. Mencari kecocokan...':'Tulisan belum terbaca. Coba gambar lebih jelas.';if(t)await findMatches(t)}catch(e){$('status').textContent='OCR gagal: '+e.message}}
+function shrinkCanvas(canvas,maxDim,quality){let w=canvas.width,h=canvas.height,scale=Math.min(1,maxDim/Math.max(w,h)),tw=Math.max(1,Math.round(w*scale)),th=Math.max(1,Math.round(h*scale)),c2=document.createElement('canvas');c2.width=tw;c2.height=th;c2.getContext('2d').drawImage(canvas,0,0,tw,th);let dataUrl=c2.toDataURL('image/jpeg',quality);return {base64:dataUrl.split(',')[1],mime:'image/jpeg'}}
+async function recognizeFromCanvas(canvas){
+ $('status').textContent='Membaca & menganalisis gambar...';
+ try{
+  const {base64,mime}=shrinkCanvas(canvas,900,.72);
+  const v=await api({action:'vision',image:base64,mime},'');
+  if(!v.soal){$('status').textContent='Tidak ada soal yang bisa dibaca di gambar ini. Coba arahkan lebih dekat/jelas.';return}
+  $('recognized').value=v.soal+((v.pilihan&&v.pilihan.length)?('\n\nPilihan:\n'+v.pilihan.join('\n')):'');
+  $('status').textContent='Soal terbaca. Mencari di bank soal...';
+  await findMatches(v.soal,{answer:v.jawaban,explanation:v.penjelasan});
+ }catch(e){$('status').textContent='Gagal membaca: '+e.message}
+}
 async function startCamera(){try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});$('video').srcObject=stream;$('video').style.display='block';return true}catch(e){$('status').textContent='Kamera gagal dibuka: '+e.message;return false}}
 function stopCamera(){if(timer){clearInterval(timer);timer=null}if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}$('video').style.display='none'}
-async function startLive(){if(timer)return;if(!stream&&!await startCamera())return;$('status').textContent='Baca langsung aktif. Kamera membaca setiap 6 detik.';let busy=false;timer=setInterval(async()=>{if(busy||!stream)return;let v=$('video');if(v.readyState<2)return;busy=true;let c=$('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);await readImage(c);busy=false},6000)}
+async function startLive(){if(timer)return;if(!stream&&!await startCamera())return;$('status').textContent='Baca langsung aktif. Kamera membaca setiap 5 detik.';let busy=false;timer=setInterval(async()=>{if(busy||!stream)return;let v=$('video');if(v.readyState<2)return;busy=true;let c=$('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);await recognizeFromCanvas(c);busy=false},5000)}
 $('start').onclick=startLive;$('bottomLive').onclick=()=>{showTab('scan');startLive()};$('stop').onclick=()=>{stopCamera();$('status').textContent='Baca langsung dihentikan.'};
-$('photo').onclick=async()=>{if(!stream&&!await startCamera())return;let v=$('video'),c=$('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);$('preview').src=c.toDataURL('image/jpeg');$('preview').style.display='block';await readImage(c)};
-$('upload').onchange=e=>{let f=e.target.files[0];if(f){$('preview').src=URL.createObjectURL(f);$('preview').style.display='block';readImage(f)}e.target.value=''};
-async function findMatches(q){$('matches').textContent='Mencari di bank soal...';try{let j=await api({action:'search',query:q},'');let rows=(j.results||[]).filter(x=>(x.score||0)>=0.35);if(rows.length){$('matches').innerHTML=rows.map(x=>`<div class="result"><div class="q">${esc(x.question)}</div><div class="answer">${esc(x.answer)}</div><small>Kecocokan kata ${Math.round((x.score||0)*100)}%</small></div>`).join('');return}$('matches').textContent='Tidak ditemukan jawaban yang cukup cocok di bank. Mencoba AI...';let ai=await api({action:'ai',query:q},'');$('matches').innerHTML=`<div class="result"><div class="q">${esc(q)}</div><div class="aiAnswer">${esc(ai.answer)}</div><small>Provider: ${esc(ai.provider)} · Jawaban AI, bukan dari bank soal</small></div>`}catch(e){$('matches').textContent='Bank soal / AI: '+e.message}}
+$('photo').onclick=async()=>{if(!stream&&!await startCamera())return;let v=$('video'),c=$('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);$('preview').src=c.toDataURL('image/jpeg');$('preview').style.display='block';await recognizeFromCanvas(c)};
+$('upload').onchange=e=>{let f=e.target.files[0];if(f){$('preview').src=URL.createObjectURL(f);$('preview').style.display='block';let img=new Image();img.onload=()=>{let c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;c.getContext('2d').drawImage(img,0,0);recognizeFromCanvas(c)};img.src=URL.createObjectURL(f)}e.target.value=''};
+async function findMatches(q,visionFallback){$('matches').textContent='Mencari di bank soal...';try{let j=await api({action:'search',query:q},'');let rows=(j.results||[]).filter(x=>(x.score||0)>=0.35);if(rows.length){$('matches').innerHTML=rows.map(x=>`<div class="result"><div class="q">${esc(x.question)}</div><div class="answer">${esc(x.answer)}</div><small>Kecocokan kata ${Math.round((x.score||0)*100)}%</small></div>`).join('');return}let answer,provider,explanation;if(visionFallback&&visionFallback.answer){$('matches').textContent='Tidak ditemukan di bank. Memakai jawaban dari pembacaan gambar...';answer=visionFallback.answer;explanation=visionFallback.explanation;provider='Gemini (baca gambar)'}else{$('matches').textContent='Tidak ditemukan jawaban yang cukup cocok di bank. Mencoba AI...';let ai=await api({action:'ai',query:q},'');answer=ai.answer;provider=ai.provider}$('matches').innerHTML=`<div class="result"><div class="q">${esc(q)}</div><div class="aiAnswer">${esc(answer)}${explanation?('<br><br><small style="font-weight:600">Penjelasan:</small> '+esc(explanation)):''}</div><small>Provider: ${esc(provider)} · Jawaban AI, bukan dari bank soal</small></div>`}catch(e){$('matches').textContent='Bank soal / AI: '+e.message}}
 $('find').onclick=()=>findMatches($('recognized').value);
 async function loadBank(){try{let j=await api({action:'list',limit:100},'');cache=j.items||[];$('count').textContent=`Menampilkan ${cache.length} soal terbaru. Total: ${j.total}`;renderBank(cache)}catch(e){$('count').textContent='Gagal memuat: '+e.message}}
 function renderBank(a){$('bankList').innerHTML=a.map(x=>`<div class="item"><div class="q">${esc(x.question)}</div><div class="answer">${esc(x.answer)}</div></div>`).join('')||'<p class="muted">Bank soal kosong.</p>'}
