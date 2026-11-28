@@ -132,6 +132,22 @@ export default async function handler(req){
    return reply({ok:true,deleted:before});
   }
 
+  if(action==="vision"){
+   const image=String(body.image||"");if(!image)return reply({error:"Gambar kosong"},400);
+   const mime=String(body.mime||"image/jpeg");
+   if(!process.env.GEMINI_API_KEY)return reply({error:"Fitur baca gambar perlu GEMINI_API_KEY diisi di Environment Variables Netlify."},503);
+   try{
+    const model=process.env.GEMINI_VISION_MODEL||process.env.GEMINI_MODEL||"gemini-2.0-flash";
+    const prompt=`Ini screenshot soal ujian dari layar HP lain. Baca semua teks pada gambar dengan teliti. Bedakan mana kalimat SOAL (pertanyaan) dan mana PILIHAN JAWABAN bila ada (pilihan ganda atau esai). Tentukan jawaban yang paling tepat dan tulis penjelasan singkat kenapa itu jawabannya. Balas HANYA dalam format JSON persis seperti ini, tanpa teks lain: {"soal":"...","pilihan":["..."],"jawaban":"...","penjelasan":"..."}. Kosongkan array "pilihan" jika soal esai/tidak berpilihan ganda. Jika gambar tidak memuat soal yang bisa dibaca sama sekali, balas {"soal":null}.`;
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:prompt},{inline_data:{mime_type:mime,data:image}}]}],generationConfig:{temperature:.1,maxOutputTokens:700,responseMimeType:"application/json"}}),signal:AbortSignal.timeout(25000)});
+    const j=await r.json();if(!r.ok)throw Error(j.error?.message||`Gemini ${r.status}`);
+    const text=j.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"{}";
+    let parsed;try{parsed=JSON.parse(text);}catch{throw Error("Gagal membaca hasil AI (format tidak sesuai)");}
+    if(!parsed||!parsed.soal)return reply({ok:true,soal:null});
+    return reply({ok:true,soal:String(parsed.soal||"").trim(),pilihan:Array.isArray(parsed.pilihan)?parsed.pilihan.map(String):[],jawaban:String(parsed.jawaban||"").trim(),penjelasan:String(parsed.penjelasan||"").trim()});
+   }catch(e){return reply({error:"Gagal membaca gambar: "+e.message},502);}
+  }
+
   if(action==="ai"){
    const q=String(body.query||"").trim();if(!q)return reply({error:"Pertanyaan kosong"},400);
    const prompt=`Jawab pertanyaan berikut dalam Bahasa Indonesia. Ringkas, tepat, jangan menebak jika informasi kurang.\n\n${q}`;
